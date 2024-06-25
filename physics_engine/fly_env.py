@@ -1,5 +1,6 @@
 from computations import AeroModel, fly_solve_diff, wing_angles, DEG2RAD, RAD2DEG
 import utils
+from flight_renderer_3d import plot_3d_trajectory_in_browser
 
 import gym
 from gym import spaces
@@ -35,14 +36,14 @@ class WingState:
         self.theta = theta
         self.phi = phi
 
+    def as_vec(self):
+        return np.concatenate([self.psi, self.theta, self.phi])
+
 
 class FlyEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, config_path, controller: 'Controller' = None):
-        # Check if we're given a controller
-        self.controller = controller
-
+    def __init__(self, config_path):
         # Define essential gym attributes
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(25,))
         self.action_space = spaces.Box(-1, 1, shape=(13,))
@@ -51,7 +52,7 @@ class FlyEnv(gym.Env):
         self.config_path = config_path
 
         # Initialize all variables and read config file:
-        self.reset(controller=controller)
+        self.reset()
 
         self.MAX_ANGLE = 25  # TODO const
 
@@ -158,7 +159,7 @@ class FlyEnv(gym.Env):
     def __is_done(self):
         return self.time_step == len(self.decision_point_idx) - 1
 
-    def reset(self, controller: 'Controller' = False):
+    def reset(self):
         # Initialize time settings
         self.time_step = 0
 
@@ -192,7 +193,9 @@ class FlyEnv(gym.Env):
         self.vlabs = [np.zeros(3)]
         self.locs = [np.zeros(3)]
         self.x_axis = [np.zeros(3)]
+        self.y_axis = [np.zeros(3)]
         self.z_axis = [np.zeros(3)]
+        self.bps_history = [self.wing_freq / (2 * np.pi)]
 
         self.euler_angles_history = []
         self.delta_euler_angles_history = []
@@ -200,12 +203,21 @@ class FlyEnv(gym.Env):
         # Times
         self.__create_time_vectors()
 
-        # Controller
-        self.controller = controller
-
-    def step(self, action=(0, 0)):
+    def step(self, action):
         if self.__is_done():
             return  # done
+
+        self.bps_history.append(self.wing_freq / (2 * np.pi))
+        self.euler_angles_history.append(self.curr_euler_angles)
+        # self.delta_euler_angles_history.append(d_euler_angles_left)
+
+        # Apply action
+        d_phi_left, d_phi_right = action[2], action[5]
+        d_bps = action[6]
+
+        self.__change_wing_phi((d_phi_left, d_phi_right))
+        # print(f'new bps: { (self.wing_freq / (2 * np.pi) + d_bps)}')
+        self.wing_freq = (self.wing_freq / (2 * np.pi) + d_bps) * 2 * np.pi
 
         step_time_start = self.tvec[self.decision_point_idx[self.time_step]]
         step_time_end = self.tvec[self.decision_point_idx[self.time_step + 1]]
@@ -237,38 +249,32 @@ class FlyEnv(gym.Env):
 
         # Compute Xax and Zax from Roni's code
         self.x_axis.append(rotation_matrix @ np.array([1, 0, 0]))
+        self.y_axis.append(rotation_matrix @ np.array([0, 1, 0]))
         self.z_axis.append(rotation_matrix @ np.array([0, 0, 1]))
 
-        if self.controller:
-            # Compute measurement points
-            # Interpolate the solution at measurement points
-            interp_func = interpolate.interp1d(ode_sol.t, ode_sol.y, axis=1)
-            measure_points = interp_func(self.tmes_sim[2 * self.time_step:2 * (self.time_step + 1)])
-            measured_uvw = np.mean(measure_points[0:3, :], axis=1)
-            measured_pqr = np.mean(measure_points[3:6, :], axis=1)
-            measured_euler_angles = np.mean(measure_points[6:, :], axis=1)
-            # Final measured state at decision point
-            measured_state = self.__get_current_state()
-            measured_state.body_vel = measured_uvw
-            measured_state.body_angular_vel = measured_pqr
-            measured_state.euler_angles = measured_euler_angles
-
-            d_euler_angles_left, d_euler_angles_right, new_bps = self.controller.respond(measured_state)
-
-            # print(new_bps)
-            self.wing_freq = new_bps * (2 * np.pi)
-            self.__change_wing_phi((d_euler_angles_left[2], d_euler_angles_right[2]))
-
-            self.euler_angles_history.append(self.curr_euler_angles)
-            self.delta_euler_angles_history.append(d_euler_angles_left)
+        # Compute measurement points
+        # Interpolate the solution at measurement points
+        interp_func = interpolate.interp1d(ode_sol.t, ode_sol.y, axis=1)
+        measure_points = interp_func(self.tmes_sim[2 * self.time_step:2 * (self.time_step + 1)])
+        measured_uvw = np.mean(measure_points[0:3, :], axis=1)
+        measured_pqr = np.mean(measure_points[3:6, :], axis=1)
+        measured_euler_angles = np.mean(measure_points[6:, :], axis=1)
+        # Final measured state at decision point
+        measured_state = self.__get_current_state()
+        measured_state.body_vel = measured_uvw
+        measured_state.body_angular_vel = measured_pqr
+        measured_state.euler_angles = measured_euler_angles
 
         # Increment time step
         self.time_step += 1
 
-        return self.__is_done()
+        # observation = np.concatenate([self.locs[-1], self.curr_body_vel, self.curr_angular_vel, self.curr_euler_angles,
+        #                               self.curr_wing_state_left.as_vec(), self.curr_wing_state_right.as_vec(),
+        #                               np.array([self.wing_freq])])
+        return measured_state, 0, self.__is_done(), None
 
-    def render(self, mode='human', x_axis=False, y_axis=False, z_axis=False, render_3d=False, x_vs_z=False,
-               render_euler_angles=False, render_delta_euler_angles=False):
+    def render(self, mode='human', x_axis=False, y_axis=False, z_axis=False, render_3d=False, render_3d_plotly=False,
+               x_vs_z=False, render_euler_angles=False, render_delta_euler_angles=False):
         if not self.__is_done():
             return Exception("Cannot render since simulation hasn't ended")
 
@@ -326,6 +332,14 @@ class FlyEnv(gym.Env):
             ax.set_title('3D Points per Time')
             plt.show()
 
+        if render_3d_plotly:
+            com, x_axis, y_axis = np.array(self.locs), np.array(self.x_axis), np.array(self.y_axis)
+            times = self.tvec[self.decision_point_idx[:self.time_step + 1]]
+            times = np.array(times).reshape(-1, 1) * 1000
+            # bps = np.array(self.bps_history).reshape(-1, 1)
+            flight_data = np.concatenate([com, x_axis, y_axis, times], axis=1)
+            plot_3d_trajectory_in_browser(flight_data, color_property='t_ms')
+
         if x_vs_z:
             # Plot x_values against z_values
             plt.figure(figsize=(8, 6))
@@ -349,6 +363,7 @@ class FlyEnv(gym.Env):
             plt.title('Euler Angles over Time (deg/ms)')
             plt.legend()
             plt.show()
+
         if render_delta_euler_angles:
             plt.figure(figsize=(8, 6))
             plt.plot(self.delta_euler_angles_history[:, 0], label='roll')

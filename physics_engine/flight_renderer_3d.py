@@ -1,6 +1,10 @@
 import numpy as np
 import plotly
 import plotly.graph_objects as go
+import pandas as pd
+
+
+_columns = ['CoM_x', 'CoM_y', 'CoM_z', 'x_body_x', 'x_body_y', 'x_body_z', 'y_body_x', 'y_body_y', 'y_body_z', 't_ms']
 
 
 def _disconnect_line_add_none(array1, array2):
@@ -144,16 +148,19 @@ def _prepare_data(input_data, color_prop, plot_cofnig, pertubation):
                                                                                                                idx_start_pertubation]
     return data
 
+def _make_figure(data_frame, color_property):
+    cols = _columns if color_property in _columns else _columns + [color_property]
+    pandas_frame = pd.DataFrame(columns=cols, data=data_frame)
+    plot_config = {'fly_samples': 1, 'traj_samples': 1, 'size_x': 1, 'size_y': 1 / 3, 'delta_y_on_x': 3 / 4}
+    data = _prepare_data(pandas_frame, color_property, plot_config, False)
+    return _plot_3d_traj(data, plot_config, "Trajectory", "1", color_property)
 
-def plot_3d_trajectory_in_browser(pandas_frame):
-    plot_config = {'fly_samples': 150, 'traj_samples': 20, 'size_x': 1, 'size_y': 1 / 3, 'delta_y_on_x': 3 / 4}
-    data = _prepare_data(pandas_frame, 'Beats per Sec', plot_config, False)
-    fig = _plot_3d_traj(data, plot_config, "Trajectory", "1", 'Beats per Sec')
+
+def plot_3d_trajectory_in_browser(data_frame, color_property):
+    fig = _make_figure(data_frame, color_property)
     fig.show()
 
 
-def save_3d_trajectory(pandas_frame, path):
-    plot_config = {'fly_samples': 150, 'traj_samples': 20, 'size_x': 1, 'size_y': 1 / 3, 'delta_y_on_x': 3 / 4}
-    data = _prepare_data(pandas_frame, 'Beats per Sec', plot_config, False)
-    fig = _plot_3d_traj(data, plot_config, "Trajectory", "1", 'Beats per Sec')
+def save_3d_trajectory(data_frame, path, color_property):
+    fig = _make_figure(data_frame, color_property)
     plotly.offline.plot(fig, filename=f'{path}.html', auto_open=False)
