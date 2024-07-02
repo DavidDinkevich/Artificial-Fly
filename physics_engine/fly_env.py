@@ -228,9 +228,10 @@ class FlyEnv(gym.Env):
         # time_vec = np.linspace(time_range[0], time_range[-1], 100)
         func = lambda t, y, fly_env: fly_solve_diff(t, y, fly_env)[0]
         ode_sol = solve_ivp(func, time_range, self.__get_body_state_vec(),
-                            method=self.config['solver']['method'], t_eval=None,
+                            method=self.config['solver']['method'],
                             args=[self],
-                            atol=self.config['solver']['atol'], rtol=self.config['solver']['rtol'])
+                            atol=self.config['solver']['atol'], rtol=self.config['solver']['rtol'],
+                            max_step=self.config['gen']['MaxStepSize'])
         # Copy solution into state (this is the new state)
         self.curr_body_vel = ode_sol.y[:3, -1]
         self.curr_angular_vel = ode_sol.y[3:6, -1]
